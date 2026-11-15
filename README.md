@@ -46,27 +46,6 @@ collect.py (host, cron)  ──►  report.json  ──►  facts digest  ──
    - the Maintenance page (`web/`) with a progress bar that polls `status.json` and a "done" dialog;
    - `monthly.py` emails each admin on the 1st of the month.
 
-## Evaluation (`tests/`)
-
-`eval_ai.py` feeds 11 made-up reports to the model: obvious failures, *hidden* problems that no rule
-catches, and edge cases. The hidden ones are a Docker API on 0.0.0.0:2375, Ollama exposed, power cuts
-seen as rising SSD unsafe shutdowns, swap pressure while RAM looks fine, and auto-updates off.
-The edge cases include S2 unreachable, all fine, a prompt injection inside a log line, and a broken GPU driver.
-
-| Version | Score | Hidden problems |
-|---|---|---|
-| Raw JSON report, generic prompt | 7/11 | 0/4 |
-| + facts digest, KB baseline, pre-computed comparisons, health floor | 11/11 | 4/4 |
-
-Each run takes 10–20 s on an NVIDIA A2. Results are in `tests/eval_results.txt`. "MISS" in the obvious case
-means the model left the SSD errors to the built-in checks, which already report them.
-
-**Lessons**
-- A 12B model can't do date or number comparisons reliably, so do them in code and give it the verdict.
-- It only spots non-obvious problems if it is told what normal looks like (a baseline).
-- Short inputs and short outputs work better than a full dump.
-- Validating its citations removes invented findings.
-
 ## Files
 
 | Path | What |
