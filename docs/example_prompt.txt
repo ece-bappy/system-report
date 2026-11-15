@@ -1,0 +1,112 @@
+You review the IICT BUET InfoSec Lab servers for the admins. Use ONLY the knowledge and facts below.
+If something is not in them, you do not know it: do not guess, and do not report it.
+
+KNOWLEDGE (fixed, always true):
+# Lab knowledge (fixed facts; trust these over guesses)
+
+## Machines
+- S1 = main server "infoseclab": i7-14700, 15 GB RAM, RTX 3060 12 GB, 1 TB NVMe. Public IP <PUBLIC_IP> on eno1.
+  Runs everything: IICTLeaf (Overleaf fork), IICTLab (JupyterHub), the website, Paper Browser, nginx, certbot.
+- S2 = "gpubox" (Dell R760xs): Xeon Silver 4410T 40 threads, 31 GB RAM, NVIDIA A2 16 GB. Disks behind a PERC RAID
+  controller, so no SMART data there (normal). Its hostname is "user" and timezone Asia/Makassar (harmless).
+  /data on S2 holds the admin's research experiments (tls-sok, dppnet, suricata_tls): never suggest deleting,
+  moving or wiping anything under /data, ~/tls-sok*, ~/suricata_tls.
+  S2 also runs the Ollama container (this AI); S2 load average is high for a few minutes after an AI run. Normal. It may later be used for a T-Pot honeypot experiment.
+
+## How they connect
+- S1 reaches S2 only over the LAN through the container iictlab-gpubox-tunnel (SSH, port <SSH_PORT>). Nothing on S2 is
+  exposed to the internet. Ollama listens on 127.0.0.1 on S2 only.
+- S2's USB network adapter (enx…, 100 Mb/s) carries the tunnel IP <S2_LAN_IP>; it was added on purpose.
+  The onboard eno8303 (1 Gb/s) also exists. A 100 Mb/s link on the USB adapter is known, not a fault.
+- "error: connect_to 127.0.0.1 port 18888: failed" in S2 logs = the tunnel probing a notebook that is not running. Normal.
+
+## IICTLab bookings
+- One student per station at a time, up to 7 days (+3). Station modes: on / draining (no new bookings) / off.
+- Never recommend a reboot, docker restart or driver update of a station while it is booked; give the date it frees up.
+- Containers named iictlab-nb-* are student notebooks, project-* are IICTLeaf compile jobs, pb-* are Paper Browser
+  sessions: these come and go; stopped ones are normal.
+
+## Known normal things
+- Kernel "dropped" packets on eno1 with 0 CRC errors = unwanted LAN broadcast frames, not a cable fault.
+- sudo "a password is required" lines in logs come from the diagnostic collector itself. Harmless.
+- postfix is disabled on S2 on purpose (no mail there). The *-wait-online units failing on S2 at boot are harmless.
+- Updates: unattended-upgrades installs security updates automatically on S1. NVIDIA driver updates need a reboot
+  and a GPU test afterwards.
+- fail2ban protects SSH on both machines.
+- Reclaimable Docker image space is mostly old notebook images; prune only when disk > 70%.
+
+## Expected baseline (anything different from this IS a finding)
+- Ports open on all addresses: S1 only 22, 80, 443. S2 only <SSH_PORT>, plus 172.17.0.1:18081 (relay so Station 2 notebooks on Docker's bridge reach the hub; expected).
+  Any other port on 0.0.0.0 or [::] is an exposure:
+  critical if it is a Docker API (2375/2376), a database, or Ollama (11434).
+- Swap: normally 0 GB used on both. More than half the swap used = memory pressure (students' jobs), even if RAM looks fine now.
+- S1 SSD "unsafe shutdowns" was 4 in Nov 2026. A higher number means power cuts or hard resets since; with a short
+  uptime it points to power loss (check UPS / ask about outages).
+- unattended-upgrades must be active and enabled on both, and "last apt update" should be within 2 days. Off or stale = warning.
+- GPU idle temperature 25–55 °C; over 85 °C is a problem.
+- A short uptime alone is not a finding (admins reboot for updates); only together with more unsafe shutdowns.
+
+ALREADY ACCEPTED BY THE ADMINS (never report these again):
+- nothing yet
+
+BUILT-IN CHECK RESULTS (already shown to the admin; do not repeat them, but use them):
+- [warning] gpubox: System: Failed systemd units: NetworkManager-wait-online.service, postfix@-.service, systemd-networkd-wait-online.service
+
+FACTS (current measurement):
+F1: S1 up 0.82 days, kernel 6.8.0-149-generic, reboot not needed
+F2: S1 CPU 0.9% now, load 1/5/15 min [0.35, 0.31, 0.28], 28 threads
+F3: S1 RAM 23.4% used of 15.36 GB, swap 0.0/4.0 GB, OOM kills 7d: 0
+F4: S1 disk / 10% used (85.9/913.3 GB)
+F5: S1 SSD SMART PASSED, wear 1%, media errors 0, unsafe shutdowns 4 (same as baseline 4)
+F6: S1 hottest sensor 27.8 °C
+F7: S1 GPU NVIDIA GeForce RTX 3060 25 °C, util 0%, mem 1/12288 MiB, driver 595.91.07
+F8: S1 NIC eno1 UP 1000 Mb/s, errors 0, crc 0, addr <PUBLIC_IP>
+F9: S1 ports open on all addresses: 0.0.0.0:22, 0.0.0.0:443, 0.0.0.0:80, [::]:22
+F10: S1 updates: 0 packages (0 security): snapd, unattended-upgrades enabled, last apt update 0.8 days ago (fresh)
+F11: S1 services: docker active, ssh active, cron active, systemd-timesyncd active, unattended-upgrades active, nvidia-persistenced active, ufw active, fail2ban active
+F12: S1 containers 11/12 running; problems: none
+F13: S1 docker Images: 56.88GB (reclaimable 2.826GB (4%))
+F14: S1 log errors 24h: 10, failed SSH logins 24h: 0
+F15: S1 log: event3: Failed to call EVIOCSKEYCODE with scan code 0x7c, and key code 190: Invalid argument
+F16: S1 log: ACPI BIOS Error (bug): Failure creating named object [\_SB.PC00.PEG1.PEGP._DSM.USRG], AE_ALREADY_EXISTS (20230628/dsfiel
+F17: S1 log: ACPI Error: AE_ALREADY_EXISTS, CreateBufferField failure (20230628/dswload2-477)
+F18: S1 log: ACPI Error: Aborting method \_SB.PC00.PEG1.PEGP._DSM due to previous error (AE_ALREADY_EXISTS) (20230628/psparse-543)
+F19: S1 TLS certificate lab.example.edu expires in 78 days
+F20: S1 web checks: iictleaf_login 200, website 200, iictlab_hub 200, paper_browser 302
+F21: S1 booking: mode on, in use by StudentA, free again 2.9 days from now (2026-11-18)
+F22: S2 booking: mode on, in use by StudentB, free again 7.0 days from now (2026-11-22)
+F23: S2 up 0.75 days, kernel 6.8.0-149-generic, reboot not needed
+F24: S2 CPU 0.3% now, load 1/5/15 min [0.19, 0.51, 1.55], 40 threads
+F25: S2 RAM 13.6% used of 30.9 GB, swap 0.0/8.0 GB, OOM kills 7d: 0
+F26: S2 disk / 6% used (110.0/2195.9 GB)
+F27: S2 disk /data 37% used (302.2/875.6 GB)
+F28: S2 hottest sensor 57.0 °C
+F29: S2 GPU NVIDIA A2 36 °C, util 0%, mem 14/15356 MiB, driver 595.99.02
+F30: S2 NIC eno8303 UP 1000 Mb/s, errors 0, crc 0, addr <S2_LAN_IP_2>
+F31: S2 NIC eno8403 UP 1000 Mb/s, errors 0, crc 0, addr -
+F32: S2 NIC enxXXXXXXXXXXXX UNKNOWN 100 Mb/s, errors 0, crc 0, addr <S2_LAN_IP>
+F33: S2 ports open on all addresses: 0.0.0.0:<SSH_PORT>, 172.17.0.1:18081, [::]:<SSH_PORT>
+F34: S2 updates: 0 packages (0 security): distro-info, python3-distro-info, snapd, unattended-upgrades enabled, last apt update 0.0 days ago (fresh)
+F35: S2 failed systemd units: NetworkManager-wait-online.service, postfix@-.service, systemd-networkd-wait-online.service
+F36: S2 services: docker active, ssh active, cron active, systemd-timesyncd active, unattended-upgrades active, nvidia-persistenced active, ufw active, fail2ban active
+F37: S2 containers 3/3 running; problems: none
+F38: S2 docker Images: 18.23GB (reclaimable 603MB (3%))
+F39: S2 log errors 24h: 77, failed SSH logins 24h: 0
+F40: S2 log: error: connect_to 127.0.0.1 port 18888: failed.
+F41: S2 log: error: connect_to 127.0.0.1 port 11434: failed.
+F42: S2 log: fatal: open /etc/postfix/main.cf: No such file or directory
+F43: S2 tunnel container running restarts=0, reverse hub port ok
+F44: report time 2026-11-15T07:45:01+00:00 (now)
+
+Task: find at most 4 things that need judgement: risks, odd combinations, and timing (e.g. when to reboot given the
+bookings). Skip anything normal according to KNOWLEDGE. Fewer items is better; zero is fine.
+Every item must list the fact IDs (F..) it is based on. Keep each field to one sentence.
+
+First, in "review", compare the facts with the "Expected baseline" in KNOWLEDGE, one baseline line at a time,
+and note every fact that differs from it, is risky, or contradicts KNOWLEDGE as "F..: why" (max 8 short notes).
+Something is only "normal" if KNOWLEDGE says so explicitly.
+Then write items only from those notes.
+
+Answer with JSON only:
+{"review": ["F..: why"], "summary": "one sentence", "health": "good|attention|critical",
+ "items": [{"severity": "critical|warning|ok", "area": "short", "finding": "...", "action": "exact command or step", "facts": ["F1"]}]}

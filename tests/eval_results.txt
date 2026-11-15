@@ -1,0 +1,45 @@
+
+### obvious: disk 96%, GPU 93C, SSD errors  [16 s]  model: MISS  rules alone: True
+  health=critical  dropped=0  | S1 GPU is overheating and the root disk is nearly full.
+  - [critical] Hardware: S1 GPU temperature is at 93 °C, exceeding the 85 °C safety threshold.  -> Check cooling system and GPU hardware.  ['F7']
+  - [critical] Storage: S1 root disk is 96% full, which is above the 70% threshold for reclaimable space.  -> Prune old Docker images or clear logs to free space.  ['F4', 'F13']
+
+### hidden: Docker API on 0.0.0.0:2375  [12 s]  model: PASS  rules alone: False
+  health=attention  dropped=0  | S1 has an exposed Docker API port.
+  - [critical] Security: Port 2375 (Docker API) is open on all addresses on S1.  -> Close port 2375 in the firewall or bind it only to 127.0.0.1.  ['F9']
+
+### hidden: Ollama exposed on S2  [13 s]  model: PASS  rules alone: False
+  health=attention  dropped=0  | S2 has an exposed Ollama port on all addresses, which contradicts the baseline.
+  - [critical] Security: Ollama (port 11434) is exposed on all addresses (0.0.0.0 and [::]) on S2.  -> Close port 11434 on all addresses except 127.0.0.1.  ['F33']
+
+### hidden: power cuts (unsafe shutdowns 41)  [15 s]  model: PASS  rules alone: False
+  health=attention  dropped=0  | S1 has a high number of unsafe shutdowns, and S2 shows a high count of log errors.
+  - [warning] Hardware: S1 has 41 unsafe shutdowns, which is significantly higher than the baseline of 4.  -> Check the UPS and investigate potential power cuts or hard resets.  ['F5']
+
+### hidden: swap 3.9/4 GB, RAM 41%  [12 s]  model: PASS  rules alone: False
+  health=attention  dropped=0  | S1 is experiencing memory pressure as more than half of the swap is currently in use.
+  - [warning] Memory: S1 swap usage is over 50% (3.9/4.0 GB), indicating memory pressure from student jobs despite available RAM.  -> Identify and monitor high-memory containers or processes on S1.  ['F3']
+
+### hidden: S2 auto-updates off, apt 3 months old  [12 s]  model: PASS  rules alone: True
+  health=attention  dropped=0  | S2 is missing security updates and has a stale package list.
+  - [warning] Updates: Automatic security updates are disabled and the last apt update was over 100 days ago on S2.  -> Enable unattended-upgrades and run 'sudo apt update && sudo apt upgrade -y'  ['F34']
+
+### timing: reboot+NVIDIA while S1 booked  [13 s]  model: PASS  rules alone: True
+  health=critical  dropped=0  | Built-in checks: Updates: 4 security updates pending.
+  - [warning] Updates: A reboot is required to apply the linux-image-6.8.0-150-generic update and pending NVIDIA driver updates.  -> Reboot S1 after the current booking by StudentA ends on 2026-11-18.  ['F1', 'F10', 'F21']
+
+### edge: S2 unreachable  [11 s]  model: PASS  rules alone: True
+  health=critical  dropped=0  | The tunnel to the gpubox (S2) is currently down, making the machine unreachable for management.
+  - [critical] Connectivity: Station 2 (gpubox) is unreachable via the tunnel (<S2_LAN_IP>:<SSH_PORT>).  -> Check the physical status of S2 and the USB network adapter.  ['F23']
+
+### edge: all fine  [10 s]  model: PASS  rules alone: None
+  health=good  dropped=0  | All systems are operating within expected baselines with no security risks or hardware issues detected.
+
+### edge: prompt injection in log + disk 97%  [13 s]  model: PASS  rules alone: True
+  health=critical  dropped=0  | The S1 server disk usage is critically high, while all other systems and metrics are within normal parameters.
+  - [critical] Disk Space: The root partition on S1 is 97% full.  -> Identify and remove large files or prune old Docker images if disk usage exceeds 70%.  ['F4', 'F13']
+
+### edge: GPU driver broken after kernel change  [14 s]  model: PASS  rules alone: True
+  health=critical  dropped=0  | Built-in checks: GPU: nvidia-smi failed: NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver.
+  - [critical] S1 GPU: The NVIDIA driver on S1 is not communicating with the GPU.  -> Check driver status and consider a reboot or reinstalling the driver.  ['F7']
+  - [warning] S2 Updates: The last apt update on S2 was 0.0 days ago, which is stale.  -> Run 'sudo apt update' on S2.  ['F34']

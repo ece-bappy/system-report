@@ -1,0 +1,247 @@
+{% extends "admin/base.html" %}
+{% block title %}Maintenance{% endblock %}
+{% block main %}
+<style>
+  .mt-actions { display: flex; gap: 10px; flex-wrap: wrap; margin: 12px 0 20px; }
+  .mt-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin: 12px 0 24px; }
+  .mt-tile { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+  .mt-tile b { display: block; font-size: 1.35rem; margin-top: 2px; }
+  .mt-tile small { color: var(--muted); }
+  .sev { display: inline-block; font-size: .75rem; font-weight: 600; padding: 2px 8px; border-radius: 99px; text-transform: uppercase; }
+  .sev-critical { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); }
+  .sev-warning { background: color-mix(in srgb, #b7791f 18%, transparent); color: #b7791f; }
+  .sev-ok, .sev-good { background: var(--ok-soft); color: var(--ok); }
+  .sev-attention { background: color-mix(in srgb, #b7791f 18%, transparent); color: #b7791f; }
+  .mt-items td { vertical-align: top; }
+  details.mt-raw summary { cursor: pointer; font-weight: 600; margin: 10px 0; }
+  details.mt-raw pre { max-height: 420px; overflow: auto; font-size: .8rem; background: var(--bg-soft); padding: 12px; border-radius: 8px; }
+  code.cmd { white-space: pre-wrap; }
+</style>
+
+<div class="title-row"><h1>Maintenance</h1></div>
+<p class="muted">Diagnostics are collected on the host by <code>~/maintenance/collect.py</code> (on request, and daily at 03:00).
+AI advice comes from a local model on Station 2 (<code>gemma4:12b</code>, stays on the LAN); if it is unavailable, {% if ai %}Gemini{% else %}Gemini (no key){% endif %}, then the built-in checks.</p>
+
+<div class="mt-actions">
+  <form method="post" action="{{ url_for('admin_maintenance_action', action='run') }}">
+    <input type="hidden" name="csrf" value="{{ csrf_token }}">
+    <button class="button mt-btn">Run diagnostic + AI</button>
+  </form>
+  {% if r %}
+  <form method="post" action="{{ url_for('admin_maintenance_action', action='analyse') }}">
+    <input type="hidden" name="csrf" value="{{ csrf_token }}">
+    <button class="button ghost mt-btn">{{ "Re-run AI analysis" if a else "Analyse with AI" }}</button>
+  </form>
+  {% endif %}
+</div>
+<div id="mt-progress" class="mt-progress" hidden>
+  <div class="mt-prow"><span id="mt-label">Working…</span><span id="mt-time" class="muted"></span></div>
+  <div class="mt-track"><div id="mt-fill"></div></div>
+  <ol class="mt-steps"><li data-p="queued">Queued</li><li data-p="collecting">Collecting</li><li data-p="analysing">AI analysis</li><li data-p="idle">Done</li></ol>
+</div>
+<p id="mt-error" class="mt-error" hidden></p>
+<dialog id="mt-done" class="mt-dlg">
+  <h3 id="mt-done-title">AI analysis done</h3>
+  <p id="mt-done-text" class="muted"></p>
+  <div class="mt-dlg-actions">
+    <button type="button" class="button ghost" onclick="this.closest('dialog').close()">Close</button>
+    <button type="button" class="button" id="mt-done-go">See result</button>
+  </div>
+</dialog>
+<style>
+  .mt-progress { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin: -8px 0 20px; }
+  .mt-prow { display: flex; justify-content: space-between; gap: 12px; font-size: .9rem; margin-bottom: 8px; }
+  .mt-track { height: 6px; background: var(--bg-soft); border-radius: 99px; overflow: hidden; position: relative; }
+  #mt-fill { height: 100%; width: 0; background: var(--accent); border-radius: 99px; transition: width .6s ease; }
+  .mt-track.indet #mt-fill { width: 30% !important; position: absolute; animation: mt-slide 1.4s ease-in-out infinite; }
+  @keyframes mt-slide { from { left: -30%; } to { left: 100%; } }
+  .mt-steps { display: flex; gap: 18px; list-style: none; padding: 0; margin: 8px 0 0; font-size: .8rem; color: var(--muted); }
+  .mt-steps li.on { color: var(--accent); font-weight: 600; }
+  .mt-steps li.done { color: var(--ink, inherit); }
+  .mt-error { color: var(--accent); }
+  .mt-dlg { border: 1px solid var(--line); border-radius: 12px; padding: 20px 22px; max-width: 420px; width: calc(100% - 32px);
+            background: var(--bg, #fff); color: inherit; box-shadow: 0 12px 40px rgba(0,0,0,.18); }
+  .mt-dlg::backdrop { background: rgba(20,18,22,.35); }
+  .mt-dlg h3 { margin: 0 0 6px; }
+  .mt-dlg.bad h3 { color: var(--accent); }
+  .mt-dlg-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px; }
+</style>
+<script>
+(() => {
+  const url = "{{ url_for('admin_maintenance_status') }}";
+  const box = document.getElementById("mt-progress"), fill = document.getElementById("mt-fill"),
+        track = fill.parentElement, label = document.getElementById("mt-label"), time = document.getElementById("mt-time"),
+        err = document.getElementById("mt-error"), btns = document.querySelectorAll(".mt-btn");
+  const order = ["queued", "collecting", "analysing", "idle"];
+  const shown = { collected: {{ (r.collected_at if r else None) | tojson }}, analysed: {{ (a['for'] if a else None) | tojson }} };
+  let busy = false, fails = 0;
+  const fmt = s => s >= 60 ? `${Math.floor(s / 60)} min ${s % 60} s` : `${s} s`;
+  async function tick() {
+    let s;
+    try {
+      const res = await fetch(url, { cache: "no-store", credentials: "same-origin" });
+      if (!res.ok) throw new Error(res.status);
+      s = await res.json(); fails = 0;
+    } catch (e) {
+      if (++fails >= 3 && busy) { label.textContent = "Connection lost, retrying…"; }
+      return setTimeout(tick, 4000);
+    }
+    const active = ["queued", "collecting", "analysing"].includes(s.phase);
+    if (active) {
+      try { if (s.phase === "analysing") sessionStorage.setItem("mt-wait", "1"); } catch (e) {}
+      busy = true; box.hidden = false; err.hidden = true;
+      btns.forEach(b => b.disabled = true);
+      const k = order.indexOf(s.phase);
+      box.querySelectorAll("li").forEach((li, j) => li.className = j < k ? "done" : j === k ? "on" : "");
+      time.textContent = s.elapsed != null ? fmt(s.elapsed) : "";
+      if (s.phase === "collecting") {
+        track.classList.remove("indet");
+        fill.style.width = Math.round(100 * (s.i + 1) / s.of) + "%";
+        label.textContent = `Collecting: ${s.step} (${s.i + 1}/${s.of})${s.step === "gpubox" ? " · checking Station 2" : ""}`;
+      } else {
+        track.classList.add("indet");
+        label.textContent = s.phase === "queued" ? "Waiting for the host collector (starts within a minute)…" : `AI: ${s.step}…`;
+      }
+      return setTimeout(tick, 2000);
+    }
+    btns.forEach(b => b.disabled = false);
+    if (s.phase === "failed" || s.error) {
+      box.hidden = true; err.hidden = false; err.textContent = s.error || "Failed.";
+      if (waiting() || busy) { done(false, s.error || "Something went wrong."); }
+    }
+    // something new finished: show it
+    // (an analysis counts only if it belongs to the current report; an older one is hidden, so it never changes)
+    if (s.collected_at !== shown.collected || (s.analysed_for === s.collected_at && s.analysed_for !== shown.analysed)) {
+      label.textContent = "Done, loading results…"; return location.reload();
+    }
+    box.hidden = true;
+    setTimeout(tick, busy ? 2000 : 15000);
+  }
+  function waiting() { try { return sessionStorage.getItem("mt-wait") === "1"; } catch (e) { return false; } }
+  function done(ok, text) {
+    try { sessionStorage.removeItem("mt-wait"); } catch (e) {}
+    const d = document.getElementById("mt-done"), go = document.getElementById("mt-done-go");
+    d.classList.toggle("bad", !ok);
+    document.getElementById("mt-done-title").textContent = ok ? "AI analysis done" : "AI analysis failed";
+    document.getElementById("mt-done-text").textContent = text;
+    go.onclick = () => {
+      const res = document.getElementById("mt-result");  // looked up now: it is further down the page than this script
+      d.close();
+      if (!res) return;  // closing returns focus to the page, which can undo a scroll: scroll after that
+      setTimeout(() => { res.scrollIntoView({ behavior: "smooth", block: "start" }); res.focus({ preventScroll: true }); }, 60);
+    };
+    d.showModal();
+  }
+  {% if a %}
+  if (waiting()) document.addEventListener("DOMContentLoaded", () => {
+    const src = {{ a.source | tojson }}, err = {{ (a.ai_error or "") | tojson }};
+    if (err) done(false, "The AI was unavailable, so only the built-in checks ran. " + err);
+    else done(true, {{ a.summary | tojson }} + " (" + src + ")");
+  });
+  {% endif %}
+  document.querySelectorAll(".mt-actions form").forEach(f => f.addEventListener("submit", () => {
+    btns.forEach(b => b.disabled = true); box.hidden = false; label.textContent = "Starting…"; track.classList.add("indet");
+  }));
+  tick();
+})();
+</script>
+
+{% if not r %}
+<p>No report yet. Press <strong>Run diagnostic</strong>.</p>
+{% else %}
+<p class="muted small">Report from {{ r.collected_at }} UTC · took {{ r.took_s }} s</p>
+
+{# ---------------- key stats #}
+{% set root = (r.disks.filesystems | selectattr('mount', 'equalto', '/') | list | first) if r.disks.filesystems else None %}
+{% set g = r.gpu.gpus[0] if r.gpu.gpus else None %}
+<div class="mt-grid">
+  <div class="mt-tile"><small>CPU</small><b>{{ r.cpu.usage_pct }}%</b><small>load {{ r.cpu.load_1_5_15 | join(' / ') }} · {{ r.cpu.cores }} threads</small></div>
+  <div class="mt-tile"><small>Memory</small><b>{{ r.memory.used_pct }}%</b><small>{{ r.memory.available_gb }} of {{ r.memory.total_gb }} GB free · swap {{ r.memory.swap_used_gb }}/{{ r.memory.swap_total_gb }} GB</small></div>
+  {% if root %}<div class="mt-tile"><small>Disk /</small><b>{{ root.used_pct }}%</b><small>{{ root.used_gb }} of {{ root.size_gb }} GB · inodes {{ root.inodes_used_pct }}%</small></div>{% endif %}
+  {% if g %}<div class="mt-tile"><small>GPU · {{ g['name'] }}</small><b>{{ g['temperature.gpu'] }} °C</b><small>{{ g['utilization.gpu'] }}% busy · {{ g['memory.used'] }}/{{ g['memory.total'] }} MiB · driver {{ g['driver_version'] }}</small></div>{% endif %}
+  {% if r.temperatures %}<div class="mt-tile"><small>Hottest sensor</small><b>{{ r.temperatures.values() | max }} °C</b><small>{{ r.temperatures | length }} sensors</small></div>{% endif %}
+  <div class="mt-tile"><small>Updates</small><b>{{ r.updates.apt_upgradable }}</b><small>{{ r.updates.apt_security }} security · reboot {{ "required" if r.host.reboot_required else "not needed" }}</small></div>
+  <div class="mt-tile"><small>TLS certificate</small><b>{{ r.tls.days_left if r.tls.days_left is defined else '?' }} days</b><small>until expiry</small></div>
+  <div class="mt-tile"><small>Uptime</small><b>{{ r.host.uptime_days }} d</b><small>kernel {{ r.host.kernel_running }}</small></div>
+  <div class="mt-tile"><small>Containers</small><b>{{ r.docker.containers | selectattr('state', 'equalto', 'running') | list | length }}/{{ r.docker.containers | length }}</b><small>running · Docker {{ r.docker.version }}</small></div>
+  <div class="mt-tile"><small>Errors in log (24 h)</small><b>{{ r.logs.errors_24h }}</b><small>{{ r.logs.ssh_failed_logins_24h }} failed SSH logins</small></div>
+</div>
+
+{# ---------------- Station 2 #}
+{% set gb = r.gpubox if r.gpubox is defined else None %}
+{% if gb %}
+<h2>Station 2 · gpubox</h2>
+{% if gb.error is defined and gb.host is not defined %}<p class="notice">Could not reach gpubox: {{ gb.error }}</p>{% else %}
+{% set groot = (gb.disks.filesystems | selectattr('mount', 'equalto', '/') | list | first) %}
+{% set gdata = (gb.disks.filesystems | selectattr('mount', 'equalto', '/data') | list | first) %}
+{% set gg = gb.gpu.gpus[0] if gb.gpu.gpus else None %}
+<div class="mt-grid">
+  <div class="mt-tile"><small>Station</small><b>{{ gb.station.mode if gb.station else '?' }}</b><small>{% if gb.station and gb.station.in_use %}in use by {{ gb.station.user }}{% else %}free{% endif %} · tunnel {{ "ok" if gb.tunnel.reverse_hub_port_on_gpubox else "DOWN" }}</small></div>
+  <div class="mt-tile"><small>CPU</small><b>{{ gb.cpu.usage_pct }}%</b><small>load {{ gb.cpu.load_1_5_15 | join(' / ') }} · {{ gb.cpu.cores }} threads</small></div>
+  <div class="mt-tile"><small>Memory</small><b>{{ gb.memory.used_pct }}%</b><small>{{ gb.memory.available_gb }} of {{ gb.memory.total_gb }} GB free</small></div>
+  {% if gg %}<div class="mt-tile"><small>GPU · {{ gg['name'] }}</small><b>{{ gg['temperature.gpu'] }} °C</b><small>{{ gg['utilization.gpu'] }}% busy · {{ gg['memory.used'] }}/{{ gg['memory.total'] }} MiB</small></div>{% endif %}
+  {% if groot %}<div class="mt-tile"><small>HDD / (homes)</small><b>{{ groot.used_pct }}%</b><small>{{ groot.used_gb }} of {{ groot.size_gb }} GB</small></div>{% endif %}
+  {% if gdata %}<div class="mt-tile"><small>SSD /data (Docker, research)</small><b>{{ gdata.used_pct }}%</b><small>{{ gdata.used_gb }} of {{ gdata.size_gb }} GB</small></div>{% endif %}
+  <div class="mt-tile"><small>Updates</small><b>{{ gb.updates.apt_upgradable }}</b><small>{{ gb.updates.apt_security }} security · reboot {{ "required" if gb.host.reboot_required else "not needed" }}</small></div>
+  {% if gb.temperatures %}<div class="mt-tile"><small>Hottest sensor</small><b>{{ gb.temperatures.values() | max }} °C</b><small>uptime {{ gb.host.uptime_days }} d</small></div>{% endif %}
+</div>
+{% endif %}
+{% endif %}
+
+{# ---------------- analysis #}
+{% if a %}
+<h2 id="mt-result" tabindex="-1" style="scroll-margin-top:80px;outline:none">Assessment <span class="sev sev-{{ a.health }}">{{ a.health }}</span></h2>
+<p>{{ a.summary }}</p>
+<p class="muted small">Source: {{ a.source }}{% if a.ai_error %} — AI error: {{ a.ai_error }}{% endif %} · {{ a.at }} UTC</p>
+<div class="table-wrap"><table class="admin-table mt-items">
+  <thead><tr><th>Severity</th><th>Area</th><th>Finding</th><th>What to do</th></tr></thead>
+  <tbody>{% for it in a['items'] %}
+    <tr><td><span class="sev sev-{{ it.severity }}">{{ it.severity }}</span></td><td>{{ it.area }}</td><td>{{ it.finding }}</td><td><code class="cmd">{{ it.action }}</code>{% if it.facts %}<br><small class="muted">based on {{ it.facts | join(', ') }}</small>{% endif %}</td></tr>
+  {% endfor %}</tbody>
+</table></div>
+{% if a.dropped %}<p class="muted small">{{ a.dropped | length }} unsupported AI claim(s) removed (no matching facts).</p>{% endif %}
+<details class="small"><summary>Accepted by admins (the AI will not report these)</summary>
+<form method="post" action="{{ url_for('admin_maintenance_action', action='accepted') }}">
+<textarea name="accepted" rows="5" style="width:100%" placeholder="One per line, e.g. - S2 USB NIC runs at 100 Mb/s: known">{{ accepted }}</textarea>
+<button class="btn btn-small">Save</button></form></details>
+{% if a.rules and not a.ai_error %}
+<h3>Built-in checks</h3>
+<ul class="small">{% for it in a.rules %}<li><span class="sev sev-{{ it.severity }}">{{ it.severity }}</span> {{ it.area }}: {{ it.finding }}{% if it.action %} — <code>{{ it.action }}</code>{% endif %}</li>{% endfor %}</ul>
+{% endif %}
+{% if a.updates %}
+<h2>Should we update?</h2>
+<div class="table-wrap"><table class="admin-table">
+  <thead><tr><th>What</th><th>Recommendation</th><th>Why</th></tr></thead>
+  <tbody>{% for u in a.updates %}<tr><td>{{ u.what }}</td><td><strong>{{ u.recommendation }}</strong></td><td>{{ u.why }}</td></tr>{% endfor %}</tbody>
+</table></div>
+{% endif %}
+{% else %}
+<p><em>Not analysed yet.</em> Press <strong>Analyse with AI</strong>.</p>
+{% endif %}
+
+{# ---------------- details #}
+<h2>Details</h2>
+<div class="table-wrap"><table class="admin-table">
+  <thead><tr><th>Container</th><th>State</th><th>Health</th><th>Restarts</th><th>CPU</th><th>Memory</th><th>Image</th></tr></thead>
+  <tbody>{% for c in r.docker.containers %}
+    <tr><td>{{ c.name }}</td><td>{{ c.state }}</td><td>{{ c.health or '—' }}</td><td>{{ c.restarts }}</td><td>{{ c.cpu or '—' }}</td><td>{{ c.mem or '—' }}</td><td><small>{{ c.image }}</small></td></tr>
+  {% endfor %}</tbody>
+</table></div>
+
+<div class="table-wrap"><table class="admin-table">
+  <thead><tr><th>Interface</th><th>State</th><th>Speed</th><th>Addresses</th><th>RX / TX</th><th>Errors</th></tr></thead>
+  <tbody>{% for i in r.network.interfaces %}
+    <tr><td>{{ i.name }}{% if i.physical %} <small>(HW)</small>{% endif %}</td><td>{{ i.state }}</td><td>{{ i.speed_mbps or '—' }}</td><td><small>{{ i.addresses | join(', ') }}</small></td><td>{{ i.rx_gb }} / {{ i.tx_gb }} GB</td><td>{{ i.errors }}</td></tr>
+  {% endfor %}</tbody>
+</table></div>
+
+<div class="table-wrap"><table class="admin-table">
+  <thead><tr><th>Service check</th><th>Result (HTTP code, seconds)</th></tr></thead>
+  <tbody>{% for k, v in r.apps.http.items() %}<tr><td>{{ k }}</td><td>{{ v }}</td></tr>{% endfor %}</tbody>
+</table></div>
+
+{% if r.updates.packages %}<p><strong>Upgradable packages:</strong> <small>{{ r.updates.packages | join(', ') }}</small></p>{% endif %}
+{% if r.logs.recent_errors %}<details class="mt-raw"><summary>Recent log errors</summary><pre>{{ r.logs.recent_errors | join('\n') }}</pre></details>{% endif %}
+<details class="mt-raw"><summary>Full report (JSON)</summary><pre>{{ r | tojson(indent=1) }}</pre></details>
+{% endif %}
+{% endblock %}
